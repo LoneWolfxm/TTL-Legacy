@@ -12,8 +12,10 @@
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0"
   },
   "dependencies": {
+    "i18next": "^23.11.5",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-i18next": "^14.1.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.2",
@@ -32,7 +34,7 @@
   "jest": {
     "testEnvironment": "jsdom",
     "preset": "ts-jest",
-    "setupFilesAfterFramework": ["<rootDir>/src/setupTests.ts"],
+    "setupFilesAfterEnv": ["<rootDir>/src/setupTests.ts"],
     "moduleNameMapper": {
       "\\.(css|less|scss|sass)$": "<rootDir>/src/__mocks__/styleMock.js"
     }
