@@ -303,3 +303,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
+
+<!-- handsoff-issue-1514 -->
+- #1514: Enhancement: add view function returning vault health summary
