@@ -312,3 +312,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1512 -->
 - #1512: Testing: add tests for repay_ttl_borrow
+
+<!-- handsoff-issue-1513 -->
+- #1513: Enhancement: add contract-level reentrancy guard helper
