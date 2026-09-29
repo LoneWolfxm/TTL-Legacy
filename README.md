@@ -306,3 +306,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1502 -->
 - #1502: Refactor: move inline tests out of test.rs into feature test files
+
+<!-- handsoff-issue-1503 -->
+- #1503: Refactor: rename bug_fix_tests_1264_1265_1266_1267.rs to descriptive name
