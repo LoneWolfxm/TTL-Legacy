@@ -47,6 +47,8 @@ pub enum AppError {
     Unauthorized(String),
     #[error("email delivery failed: {0}")]
     EmailDelivery(String),
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl IntoResponse for AppError {
@@ -59,7 +61,45 @@ impl IntoResponse for AppError {
             AppError::TwoFactorNotEnabled => (StatusCode::BAD_REQUEST, "two_factor_not_enabled"),
             AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             AppError::EmailDelivery(_) => (StatusCode::BAD_GATEWAY, "email_delivery_failed"),
+            AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error"),
         };
         ApiError::new(status, code, self.to_string()).into_response()
+    }
+}
+
+/// Convert a poisoned lock error into a typed internal error so handlers can
+/// propagate it with `?` instead of panicking via `unwrap()`/`expect()`.
+impl<T> From<std::sync::PoisonError<T>> for AppError {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        AppError::Internal("lock poisoned".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_lock_maps_to_internal_error() {
+        let err: AppError = std::sync::PoisonError::new(()).into();
+        assert!(matches!(err, AppError::Internal(_)));
+    }
+
+    #[test]
+    fn internal_error_maps_to_500() {
+        let response = AppError::Internal("boom".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn invalid_input_maps_to_422() {
+        let response = AppError::InvalidInput("bad".to_string()).into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn not_found_maps_to_404() {
+        let response = AppError::NotFound.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }
