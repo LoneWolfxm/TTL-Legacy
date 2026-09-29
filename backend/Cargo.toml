@@ -63,3 +63,6 @@ mockito = "1.4"
 
 # Soroban sandbox for fee sponsorship integration tests (Issue #1499)
 soroban-sdk = { version = "21", features = ["testutils"] }
+
+# Property-based tests for input sanitization (Issue #1500)
+proptest = "1"
