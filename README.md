@@ -303,3 +303,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
+
+<!-- handsoff-issue-1496 -->
+- #1496: Enhancement: add replay protection window for 2FA codes
