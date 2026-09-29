@@ -174,6 +174,72 @@ fn test_claim_exceeds_max_size_panics() {
     client.verify_claim(&proof, &claim);
 }
 
+// ── #1518: Input length validation tests ──────────────────────────────────────
+
+/// Proof shorter than MIN_PROOF_SIZE — must panic with ProofTooShort (#6).
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_proof_below_min_size_panics() {
+    let (env, client) = setup();
+    let data = [0xffu8; MIN_PROOF_SIZE as usize - 1];
+    let proof = Bytes::from_slice(&env, &data);
+    let claim = bytes!(&env, 0xcafebabe);
+    client.verify_claim(&proof, &claim);
+}
+
+/// Proof at exactly MIN_PROOF_SIZE — must succeed.
+#[test]
+fn test_proof_at_min_size_succeeds() {
+    let (env, client) = setup();
+    let data = [0xffu8; MIN_PROOF_SIZE as usize];
+    let proof = Bytes::from_slice(&env, &data);
+    let claim = bytes!(&env, 0xcafebabe);
+    assert!(client.verify_claim(&proof, &claim));
+}
+
+/// Claim shorter than MIN_CLAIM_SIZE — must panic with ClaimTooShort (#7).
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_claim_below_min_size_panics() {
+    let (env, client) = setup();
+    let proof = bytes!(&env, 0xdeadbeef);
+    let data = [0xaau8; MIN_CLAIM_SIZE as usize - 1];
+    let claim = Bytes::from_slice(&env, &data);
+    client.verify_claim(&proof, &claim);
+}
+
+/// Claim at exactly MIN_CLAIM_SIZE — must succeed.
+#[test]
+fn test_claim_at_min_size_succeeds() {
+    let (env, client) = setup();
+    let proof = bytes!(&env, 0xdeadbeef);
+    let data = [0xaau8; MIN_CLAIM_SIZE as usize];
+    let claim = Bytes::from_slice(&env, &data);
+    assert!(client.verify_claim(&proof, &claim));
+}
+
+/// Malformed proof of unexpected (too short) length must be rejected before
+/// verification, returning the typed ProofTooShort error.
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_malformed_short_proof_rejected() {
+    let (env, client) = setup();
+    let proof = bytes!(&env, 0x01);
+    let claim = bytes!(&env, 0xcafebabe);
+    client.verify_claim(&proof, &claim);
+}
+
+/// Malformed claim of unexpected (too short) length must be rejected before
+/// verification, returning the typed ClaimTooShort error.
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_malformed_short_claim_rejected() {
+    let (env, client) = setup();
+    let proof = bytes!(&env, 0xdeadbeef);
+    let claim = bytes!(&env, 0x01);
+    client.verify_claim(&proof, &claim);
+}
+
 // ── #818: Event emission tests ────────────────────────────────────────────────
 
 /// verify_claim with a valid proof must emit exactly one vfy_claim event.
