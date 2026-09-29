@@ -312,3 +312,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1504 -->
 - #1504: Enhancement: add contract function to query all vaults by beneficiary
+
+<!-- handsoff-issue-1505 -->
+- #1505: Fix: beneficiary index not cleaned up on vault release
