@@ -309,3 +309,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1503 -->
 - #1503: Refactor: rename bug_fix_tests_1264_1265_1266_1267.rs to descriptive name
+
+<!-- handsoff-issue-1504 -->
+- #1504: Enhancement: add contract function to query all vaults by beneficiary
