@@ -303,3 +303,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
+
+<!-- handsoff-issue-1501 -->
+- #1501: Fix: rebalance_tokens is an unimplemented no-op
