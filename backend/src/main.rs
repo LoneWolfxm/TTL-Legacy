@@ -104,17 +104,56 @@ fn build_rate_limit_store() -> Arc<dyn RateLimitStore> {
     Arc::new(InMemoryRateLimitStore::new())
 }
 
-/// Builds the CORS layer based on `APP_ENV` and `ALLOWED_ORIGINS` environment variables.
+/// Parses the `CORS_ALLOWED_ORIGINS` environment variable into a list of
+/// allowed origins (issue #1490).
+///
+/// The value is a comma-separated list of origins, e.g.
+/// `https://app.example.com,https://admin.example.com`. Whitespace around
+/// each entry is trimmed and empty entries are ignored. A bare `*` wildcard
+/// is rejected when credentials are enabled, since browsers forbid combining
+/// `Access-Control-Allow-Credentials: true` with a wildcard origin.
+fn parse_cors_allowed_origins(raw: &str, allow_credentials: bool) -> Vec<HeaderValue> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| {
+            if *s == "*" {
+                if allow_credentials {
+                    tracing::warn!(
+                        "CORS_ALLOWED_ORIGINS contains wildcard '*' while credentials are \
+                         enabled; rejecting wildcard origin"
+                    );
+                }
+                false
+            } else {
+                true
+            }
+        })
+        .filter_map(|s| match s.parse::<HeaderValue>() {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::warn!("ignoring invalid CORS origin: {s}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Builds the CORS layer based on `APP_ENV` and `CORS_ALLOWED_ORIGINS`
+/// environment variables (issue #1490).
 ///
 /// # Behaviour
 ///
-/// | `APP_ENV`                   | `ALLOWED_ORIGINS`  | Result                                              |
-/// |-----------------------------|--------------------|----------------------------------------------------|
-/// | unset **or** `development`  | any / empty        | `CorsLayer::permissive()` — wildcard, dev mode      |
-/// | `production` / `staging`    | non-empty list     | Origin whitelist with `Vary: Origin` header         |
-/// | `production` / `staging`    | empty              | `CorsLayer::new()` — blocks all cross-origin        |
+/// | `APP_ENV`                   | `CORS_ALLOWED_ORIGINS` | Result                                          |
+/// |-----------------------------|------------------------|-------------------------------------------------|
+/// | unset **or** `development`  | any / empty            | `CorsLayer::permissive()` — wildcard, dev mode  |
+/// | `production` / `staging`    | non-empty list         | Origin whitelist with `Vary: Origin` header     |
+/// | `production` / `staging`    | empty                  | `CorsLayer::new()` — blocks all cross-origin    |
+///
+/// A wildcard `*` entry is rejected when credentials are enabled.
 ///
 /// Issue #1179: CORS Policy Hardening
+/// Issue #1490: CORS origins configurable via environment
 fn build_cors_layer() -> CorsLayer {
     let app_env = std::env::var("APP_ENV").unwrap_or_default();
     let is_production = !app_env.is_empty() && app_env != "development";
@@ -124,20 +163,18 @@ fn build_cors_layer() -> CorsLayer {
         return CorsLayer::permissive();
     }
 
-    // Production / staging: honour the ALLOWED_ORIGINS whitelist.
-    let allowed_origins = std::env::var("ALLOWED_ORIGINS").unwrap_or_default();
-    if allowed_origins.is_empty() {
+    // Production / staging: honour the CORS_ALLOWED_ORIGINS whitelist.
+    let allow_credentials = true;
+    let allowed_origins = std::env::var("CORS_ALLOWED_ORIGINS").unwrap_or_default();
+    let origins = parse_cors_allowed_origins(&allowed_origins, allow_credentials);
+    if origins.is_empty() {
         // No origins configured → block all cross-origin requests.
         return CorsLayer::new();
     }
 
-    let origins: Vec<HeaderValue> = allowed_origins
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-
     CorsLayer::new()
         .allow_origin(origins)
+        .allow_credentials(allow_credentials)
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -231,169 +268,6 @@ async fn fetch_contract_version() -> Result<u32, String> {
         }
     };
 
-    let client = reqwest::Client::builder()
-        .timeout(CONTRACT_VERSION_RPC_TIMEOUT)
-        .build()
-        .map_err(|e| format!("failed to build Soroban RPC client: {e}"))?;
+    let client = reqwest::C
 
-    let payload = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getContractData",
-        "params": {
-            "contractId": contract_id,
-            "key": "get_contract_version",
-            "durability": "persistent",
-        }
-    });
-
-    let response = client
-        .post(&rpc_url)
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Soroban RPC request to {rpc_url} failed: {e}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "Soroban RPC returned HTTP {} for get_contract_version",
-            response.status()
-        ));
-    }
-
-    let body: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("invalid Soroban RPC response: {e}"))?;
-
-    if let Some(err) = body.get("error") {
-        return Err(format!("Soroban RPC error: {err}"));
-    }
-
-    let version = body
-        .get("result")
-        .and_then(|r| r.get("version"))
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "Soroban RPC response missing numeric `version`".to_string())?;
-
-    u32::try_from(version).map_err(|_| format!("contract version {version} out of range"))
-}
-
-#[tokio::main]
-async fn main() {
-    // Initialise OpenTelemetry distributed tracing.
-    // Spans are exported to the OTLP endpoint configured via
-    // OTEL_EXPORTER_OTLP_ENDPOINT (default: http://localhost:4317).
-    // Issue #1145: Add OpenTelemetry Distributed Tracing to Backend
-    let _otel_guard = otel::init_tracer("ttl-legacy-backend");
-
-    // Check contract version before proceeding with server startup
-    let min_contract_version =
-        parse_min_contract_version(std::env::var("MIN_CONTRACT_VERSION").ok());
-
-    let version_result = check_contract_version(fetch_contract_version, min_contract_version).await;
-
-    tracing::info!("{}", version_result);
-
-    if let Some(err) = &version_result.error {
-        tracing::error!("Contract version check failed: {}", err);
-        std::process::exit(1);
-    }
-
-    if !version_result.compatible {
-        tracing::error!("{}", version_result);
-        std::process::exit(1);
-    }
-
-    let pool_config = db::PoolConfig::from_env();
-    tracing::info!(
-        min = pool_config.min,
-        max = pool_config.max,
-        timeout_secs = pool_config.timeout_secs,
-        "database pool configuration"
-    );
-
-    // Issue #1487: unify SQLite access on sqlx. The database is opened through
-    // the sqlx-backed `Db` handle and migrations are applied via `sqlx::migrate!`
-    // inside `Db::migrate`, so no rusqlite call sites remain here.
-    let db =
-        Arc::new(Db::open_with_pool_config(":memory:", &pool_config).expect("failed to open db"));
-    db.migrate().await.expect("migration failed");
-
-    let consensus = NodeCache::from_env();
-    tracing::info!(
-        node_id = consensus.node_id(),
-        strategy = ?consensus.strategy(),
-        "consensus cache initialized"
-    );
-
-    // Rate-limit store: in-memory by default, Redis when configured (issue #1494).
-    let rate_limit_store = build_rate_limit_store();
-
-    // Shared shutdown token: every background task observes this and drains
-    // in-flight work when SIGTERM/SIGINT is received (issue #1488).
-    let shutdown = CancellationToken::new();
-
-    let scheduler_db = Arc::clone(&db);
-    let scheduler_shutdown = shutdown.clone();
-    let scheduler_handle = tokio::spawn(async move {
-        scheduler::run(scheduler_db, scheduler_shutdown).await;
-    });
-
-    let webhook_db = Arc::clone(&db);
-    let webhook_shutdown = shutdown.clone();
-    let webhook_handle = tokio::spawn(async move {
-        webhook_retry::run(webhook_db, webhook_shutdown).await;
-    });
-
-    // #1596: warn owners when a vault's storage TTL nears archival.
-    let notification_service = Arc::new(notifications::NotificationService::new(
-        Arc::new(notifications::FcmClient::new(
-            std::env::var("FCM_SERVER_KEY").unwrap_or_default(),
-            std::env::var("FCM_PROJECT_ID").unwrap_or_default(),
-        )),
-        notifications::create_token_store(),
-        notifications::create_prefs_store(),
-        notifications::create_schedule_store(),
-        notifications::create_delivery_store(),
-    ));
-    notifications::start_scheduler(Arc::clone(&notification_service), 60);
-    ttl_watch::spawn(
-        Arc::clone(&db),
-        notification_service,
-        ttl_watch::TtlWatchConfig::from_env(),
-    );
-
-    let state = AppState {
-        db: Arc::clone(&db),
-        consensus: Arc::new(consensus),
-        metrics: Arc::new(Metrics::new()),
-        shutdown: shutdown.clone(),
-        rate_limit_store,
-    };
-
-    let app = routes::build_router(state.clone());
-
-    let app = Router::new()
-        .route("/health", get(health_handler))
-        .route("/health/consensus", get(consensus_health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(metrics_handler))
-        .route(
-            "/api/vaults/:vault_id/reminder-preferences",
-            post(routes::set_preferences)
-                .layer(middleware::from_fn_with_state(
-                    sensitive_limiter.clone(),
-                    rate_limit::rate_limit_middleware,
-                ))
-                .get(routes::get_preferences)
-                .delete(routes::delete_preferences),
-        )
-        .route(
-            "/api/vaults/:vault_id/subscriptions",
-            post(routes::set_subscription)
-                .layer(middleware::from_fn_with_state(
-                    sensitive_limiter.clone(),
-                  
-
-/* … truncated 2140 chars — edit only what you need near the top … */
+/* … truncated 5813 chars — edit only what you need near the top … */
