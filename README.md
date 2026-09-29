@@ -306,3 +306,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1510 -->
 - #1510: Fix: loan repayment late-penalty lacks upper bound
+
+<!-- handsoff-issue-1511 -->
+- #1511: Testing: add tests for token lending and repayment flow
