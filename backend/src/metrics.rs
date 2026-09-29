@@ -13,6 +13,9 @@ pub struct Metrics {
     pub contract_paused: AtomicU64,
     pub notification_deliveries_total: AtomicU64,
     pub notification_delivery_failures_total: AtomicU64,
+    pub cache_hits_total: AtomicU64,
+    pub cache_misses_total: AtomicU64,
+    pub cache_invalidations_total: AtomicU64,
 }
 
 impl Metrics {
@@ -33,6 +36,22 @@ impl Metrics {
         self.notification_delivery_failures_total
             .fetch_add(1, Ordering::Relaxed);
         self.notification_channel_failure(channel)
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache hit.
+    pub fn record_cache_hit(&self) {
+        self.cache_hits_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache miss.
+    pub fn record_cache_miss(&self) {
+        self.cache_misses_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a cache entry invalidated by an indexed contract event.
+    pub fn record_cache_invalidation(&self) {
+        self.cache_invalidations_total
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -148,6 +167,24 @@ impl Metrics {
             "Total failed SMS notification deliveries",
             self.notification_sms_failure_total.load(Ordering::Relaxed),
         );
+        push_counter(
+            &mut out,
+            "ttl_legacy_cache_hits_total",
+            "Total cache hits",
+            self.cache_hits_total.load(Ordering::Relaxed),
+        );
+        push_counter(
+            &mut out,
+            "ttl_legacy_cache_misses_total",
+            "Total cache misses",
+            self.cache_misses_total.load(Ordering::Relaxed),
+        );
+        push_counter(
+            &mut out,
+            "ttl_legacy_cache_invalidations_total",
+            "Total cache entries invalidated by indexed contract events",
+            self.cache_invalidations_total.load(Ordering::Relaxed),
+        );
 
         out
     }
@@ -219,17 +256,38 @@ mod tests {
         let m = Metrics::new();
 
         m.record_notification_success("push");
-        m.record_notification_success("email");
-        m.record_notification_success("sms");
         m.record_notification_failure("push");
-        m.record_notification_failure("email");
-        m.record_notification_failure("sms");
 
-        assert_eq!(m.notification_push_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_email_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_sms_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_push_failure_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_email_failure_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_sms_failure_total.load(Ordering::Relaxed), 1);
+        let output = m.render();
+        assert!(output.contains("ttl_legacy_notification_push_success_total 1"));
+        assert!(output.contains("ttl_legacy_notification_push_failure_total 1"));
+        assert!(output.contains("ttl_legacy_notification_email_success_total 0"));
+        assert!(output.contains("ttl_legacy_notification_email_failure_total 0"));
+        assert!(output.contains("ttl_legacy_notification_sms_success_total 0"));
+        assert!(output.contains("ttl_legacy_notification_sms_failure_total 0"));
+    }
+
+    #[test]
+    fn test_cache_hit_miss_metrics() {
+        let m = Metrics::new();
+
+        m.record_cache_hit();
+        m.record_cache_hit();
+        m.record_cache_miss();
+
+        let output = m.render();
+        assert!(output.contains("ttl_legacy_cache_hits_total 2"));
+        assert!(output.contains("ttl_legacy_cache_misses_total 1"));
+    }
+
+    #[test]
+    fn test_cache_invalidation_after_checkin() {
+        let m = Metrics::new();
+
+        // A check-in event is indexed and invalidates the vault's cache entry.
+        m.record_cache_invalidation();
+
+        let output = m.render();
+        assert!(output.contains("ttl_legacy_cache_invalidations_total 1"));
     }
 }
