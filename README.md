@@ -303,3 +303,6 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
+
+<!-- handsoff-issue-1510 -->
+- #1510: Fix: loan repayment late-penalty lacks upper bound
