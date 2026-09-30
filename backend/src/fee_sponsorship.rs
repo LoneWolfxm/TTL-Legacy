@@ -235,11 +235,153 @@ pub enum FeeSponsorsException {
     InvalidAccount(String),
     /// Invalid release amount.
     InvalidAmount(String),
-    /// Vault not found or already released.
-    VaultNotFound(String),
-    /// Insufficient balance to deduct protocol fee.
-    InsufficientBalance(String),
-    /// Fee bump transaction construction failed.
-    TransactionConstr
+    /// Sponsor account has insufficient balance to cover fees.
+    InsufficientSponsorBalance { available: i128, required: i128 },
+    /// Transaction submission failed.
+    SubmissionFailed(String),
+}
 
-/* … truncated 5501 chars — edit only what you need near the top … */
+impl fmt::Display for FeeSponsorsException {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidAccount(msg) => write!(f, "invalid account: {}", msg),
+            Self::InvalidAmount(msg) => write!(f, "invalid amount: {}", msg),
+            Self::InsufficientSponsorBalance { available, required } => write!(
+                f,
+                "insufficient sponsor balance: available={}, required={}",
+                available, required
+            ),
+            Self::SubmissionFailed(msg) => write!(f, "submission failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for FeeSponsorsException {}
+
+/// Minimal in-process Soroban sandbox used by the integration tests below.
+///
+/// The real network is not available in unit tests, so this harness models the
+/// observable behaviour of a local Soroban sandbox: it tracks sponsor balances,
+/// applies the protocol fee, and rejects transactions the sponsor cannot fund.
+#[cfg(test)]
+mod sandbox {
+    use super::*;
+
+    /// A local Soroban sandbox with a funded sponsor account.
+    pub struct SorobanSandbox {
+        pub sponsor_account: String,
+        pub sponsor_balance: i128,
+        pub ledger_sequence: u64,
+    }
+
+    impl SorobanSandbox {
+        /// Spin up a sandbox with a sponsor account funded with `balance` stroops.
+        pub fn start(sponsor_balance: i128) -> Self {
+            Self {
+                sponsor_account: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+                    .to_string(),
+                sponsor_balance,
+                ledger_sequence: 1,
+            }
+        }
+
+        /// Execute a sponsored claim end-to-end against the sandbox.
+        pub fn sponsored_claim(
+            &mut self,
+            beneficiary: &str,
+            released_amount: i128,
+            stellar_base_fee: i128,
+            fee_bump_premium: i128,
+        ) -> Result<SponsoredRelease, FeeSponsorsException> {
+            let breakdown =
+                FeeBreakdown::new(released_amount, stellar_base_fee, fee_bump_premium);
+
+            if self.sponsor_balance < breakdown.total_sponsor_fee {
+                return Err(FeeSponsorsException::InsufficientSponsorBalance {
+                    available: self.sponsor_balance,
+                    required: breakdown.total_sponsor_fee,
+                });
+            }
+
+            let tx_hash = construct_fee_bump_transaction(
+                beneficiary,
+                &self.sponsor_account,
+                breakdown.net_amount,
+                None,
+            )?;
+
+            self.sponsor_balance -= breakdown.total_sponsor_fee;
+            self.ledger_sequence += 1;
+
+            Ok(SponsoredRelease {
+                tx_id: format!("tx-{}", self.ledger_sequence),
+                vault_id: "vault-1".to_string(),
+                beneficiary: beneficiary.to_string(),
+                released_amount,
+                protocol_fee: breakdown.protocol_fee,
+                net_amount: breakdown.net_amount,
+                fee_bump_tx_hash: tx_hash,
+                sponsor_account: self.sponsor_account.clone(),
+                sponsorship_fee: breakdown.total_sponsor_fee,
+                status: SponsoredReleaseStatus::Confirmed,
+                created_at: Utc::now(),
+                executed_at: Some(Utc::now()),
+                ledger_sequence: Some(self.ledger_sequence),
+                error: None,
+            })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sandbox::SorobanSandbox;
+    use super::*;
+
+    const BENEFICIARY: &str = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+    #[test]
+    fn sponsored_claim_end_to_end() {
+        // Spin up a local Soroban sandbox with a funded sponsor.
+        let mut sandbox = SorobanSandbox::start(1_000_000);
+        let released_amount = 10_000_000i128;
+
+        let release = sandbox
+            .sponsored_claim(BENEFICIARY, released_amount, 100, 200)
+            .expect("sponsored claim should succeed");
+
+        // Protocol fee is 0.1% of the released amount.
+        assert_eq!(release.protocol_fee, 10_000);
+        assert_eq!(release.net_amount, released_amount - 10_000);
+        assert_eq!(release.sponsorship_fee, 300);
+        assert_eq!(release.status, SponsoredReleaseStatus::Confirmed);
+        assert_eq!(release.fee_bump_tx_hash.len(), 64);
+        assert!(release.executed_at.is_some());
+        assert!(release.ledger_sequence.is_some());
+
+        // Sponsor balance is debited by exactly the sponsorship fee.
+        assert_eq!(sandbox.sponsor_balance, 1_000_000 - 300);
+    }
+
+    #[test]
+    fn insufficient_sponsor_balance_is_rejected() {
+        // Sponsor cannot cover the fee bump premium.
+        let mut sandbox = SorobanSandbox::start(50);
+
+        let err = sandbox
+            .sponsored_claim(BENEFICIARY, 10_000_000, 100, 200)
+            .expect_err("claim should fail when sponsor is underfunded");
+
+        match err {
+            FeeSponsorsException::InsufficientSponsorBalance { available, required } => {
+                assert_eq!(available, 50);
+                assert_eq!(required, 300);
+            }
+            other => panic!("unexpected error: {:?}", other),
+        }
+
+        // No ledger was consumed and the balance is untouched.
+        assert_eq!(sandbox.sponsor_balance, 50);
+        assert_eq!(sandbox.ledger_sequence, 1);
+    }
+}

@@ -85,11 +85,9 @@ pub struct AppState {
 
 pub fn search_vaults(store: &VaultStore, query: &SearchQuery) -> SearchResult {
     let vaults = store.lock().unwrap();
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(10);
-    let offset = ((page - 1) * limit) as usize;
+    let limit = query.limit.unwrap_or(20).clamp(1, 100);
 
-    let filtered: Vec<Vault> = vaults
+    let mut filtered: Vec<Vault> = vaults
         .values()
         .filter(|v| {
             if let Some(ref owner) = query.owner {
@@ -122,17 +120,27 @@ pub fn search_vaults(store: &VaultStore, query: &SearchQuery) -> SearchResult {
         .cloned()
         .collect();
 
-    let total = filtered.len() as u32;
-    let paginated: Vec<Vault> = filtered
-        .into_iter()
-        .skip(offset)
-        .take(limit as usize)
-        .collect();
+    // Stable ordering by vault ID so cursors are deterministic.
+    filtered.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Apply cursor: skip everything up to and including the cursor vault ID.
+    if let Some(ref cursor) = query.cursor {
+        let pos = filtered.iter().position(|v| &v.id == cursor);
+        if let Some(idx) = pos {
+            filtered = filtered.into_iter().skip(idx + 1).collect();
+        }
+    }
+
+    let mut paginated: Vec<Vault> = filtered.into_iter().take(limit as usize + 1).collect();
+    let next_cursor = if paginated.len() > limit as usize {
+        paginated.pop().map(|v| v.id.clone())
+    } else {
+        None
+    };
 
     SearchResult {
         vaults: paginated,
-        total,
-        page,
+        next_cursor,
         limit,
     }
 }
@@ -2034,13 +2042,13 @@ mod tests {
             status: None,
             created_after: None,
             created_before: None,
-            page: None,
             limit: None,
+            cursor: None,
         };
 
         let result = search_vaults(&store, &query);
         assert_eq!(result.vaults.len(), 1);
-        assert_eq!(result.total, 1);
+        assert!(result.next_cursor.is_none());
     }
 
     #[test]
@@ -2048,7 +2056,7 @@ mod tests {
         let store = create_vault_store();
         for i in 0..25 {
             let vault = Vault {
-                id: format!("v{}", i),
+                id: format!("v{:02}", i),
                 owner: "owner1".to_string(),
                 beneficiary: "ben1".to_string(),
                 balance: 1000,
@@ -2058,23 +2066,53 @@ mod tests {
                 status: VaultStatus::Active,
                 ttl_remaining: Some(100000),
             };
-            store.lock().unwrap().insert(format!("v{}", i), vault);
+            store.lock().unwrap().insert(format!("v{:02}", i), vault);
         }
 
+        // First page — no cursor.
         let query = SearchQuery {
             owner: Some("owner1".to_string()),
             beneficiary: None,
             status: None,
             created_after: None,
             created_before: None,
-            page: Some(2),
             limit: Some(10),
+            cursor: None,
         };
 
         let result = search_vaults(&store, &query);
         assert_eq!(result.vaults.len(), 10);
-        assert_eq!(result.total, 25);
-        assert_eq!(result.page, 2);
+        assert!(result.next_cursor.is_some());
+
+        // Second page — use the cursor from the first page.
+        let query2 = SearchQuery {
+            owner: Some("owner1".to_string()),
+            beneficiary: None,
+            status: None,
+            created_after: None,
+            created_before: None,
+            limit: Some(10),
+            cursor: result.next_cursor,
+        };
+
+        let result2 = search_vaults(&store, &query2);
+        assert_eq!(result2.vaults.len(), 10);
+        assert!(result2.next_cursor.is_some());
+
+        // Third (last) page — no more results after this.
+        let query3 = SearchQuery {
+            owner: Some("owner1".to_string()),
+            beneficiary: None,
+            status: None,
+            created_after: None,
+            created_before: None,
+            limit: Some(10),
+            cursor: result2.next_cursor,
+        };
+
+        let result3 = search_vaults(&store, &query3);
+        assert_eq!(result3.vaults.len(), 5);
+        assert!(result3.next_cursor.is_none());
     }
 }
 

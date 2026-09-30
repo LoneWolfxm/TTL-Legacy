@@ -189,6 +189,7 @@ pub use types::{
     RELEASE_VOTE_PASSED_TOPIC,
     RELEASE_VOTE_TOPIC,
     REMOVE_PASSKEY_TOPIC,
+    PASSKEY_REVOKED_TOPIC,
     RESTORE_VAULT_TOPIC,
     RESUME_VAULT_TOPIC,
     REVERSAL_GRACE_EXPIRED_TOPIC,
@@ -347,6 +348,11 @@ mod ownership_transfer_1340_tests;
 // Issue #1297: automated beneficiary conflict resolution
 #[cfg(test)]
 mod beneficiary_conflict_resolution_tests;
+
+// Issues #1525, #1526, #1527, #1528: passkey revocation event, vesting
+// validation, vesting property tests, withdrawal whitelist expiry
+#[cfg(test)]
+mod issue_1525_1528_tests;
 
 /// Minimum TTL (in ledgers) before a persistent entry is eligible for extension.
 /// At ~5 s/ledger this is ~83 minutes.
@@ -599,6 +605,12 @@ pub enum ContractError {
     ConflictNotFound = 146,
     /// Conflict exists but no claims have been filed.
     ConflictNoClaimsFound = 147,
+    // Issue #1526: vesting schedule validation
+    VestingZeroDuration = 148,
+    VestingCliffAfterEnd = 149,
+    // Issue #1528: withdrawal whitelist expiry
+    WhitelistEntryExpired = 150,
+    InvalidWhitelistExpiry = 151,
 }
 
 #[contract]
@@ -2625,7 +2637,7 @@ impl TtlVaultContract {
         // Check whitelist - Issue #567 / #952
         // withdraw() always transfers to vault.owner, so we validate the owner
         // is an approved destination when a whitelist is configured.
-        if !Self::is_whitelisted(&env, vault_id, &vault.owner) {
+        if let Err(e) = Self::check_whitelisted(&env, vault_id, &vault.owner) {
             Self::record_withdrawal_audit(
                 &env,
                 vault_id,
@@ -2638,7 +2650,7 @@ impl TtlVaultContract {
                 (WHITELIST_VIOLATION_TOPIC, vault_id),
                 (&vault.owner, amount),
             );
-            return Err(ContractError::WithdrawalDestinationNotWhitelisted);
+            return Err(e);
         }
 
         let token_client = token::Client::new(&env, &vault.token_address);
@@ -2756,7 +2768,7 @@ impl TtlVaultContract {
                 );
                 return Err(ContractError::AlreadyReleased);
             }
-            if !Self::is_whitelisted(&env, w.vault_id, &w.destination) {
+            if let Err(e) = Self::check_whitelisted(&env, w.vault_id, &w.destination) {
                 Self::record_withdrawal_audit(
                     &env,
                     w.vault_id,
@@ -2765,7 +2777,7 @@ impl TtlVaultContract {
                     false,
                     "Destination not whitelisted",
                 );
-                return Err(ContractError::WithdrawalDestinationNotWhitelisted);
+                return Err(e);
             }
             let current = vault_totals.get(w.vault_id).unwrap_or(0i128);
             vault_totals.set(w.vault_id, current + w.amount);
@@ -4710,6 +4722,9 @@ impl TtlVaultContract {
     /// * `ContractError::NotOwner` - If caller is not the vault owner
     /// * `ContractError::AlreadyReleased` - If vault is not Locked
     /// * `ContractError::InvalidInterval` - If interval or num_installments is 0
+    /// * `ContractError::VestingZeroDuration` - If the schedule's total duration is 0
+    /// * `ContractError::VestingCliffAfterEnd` - If `start_time + cliff_period` is after the schedule end
+    /// * `ContractError::InvalidVestingSchedule` - If the schedule end overflows
     /// * `ContractError::EmptyVault` - If vault balance is 0
     /// * `ContractError::InvalidAmount` - If amount is <= 0
     /// * `ContractError::InsufficientBalance` - If total scheduled amount would exceed vault balance
@@ -4736,9 +4751,21 @@ impl TtlVaultContract {
         if interval == 0 || num_installments == 0 {
             return Err(ContractError::InvalidInterval);
         }
-        let end_time = start_time + (interval as u64 * num_installments as u64);
-        if end_time <= start_time {
-            return Err(ContractError::InvalidVestingSchedule);
+        // Issue #1526: reject zero-duration schedules and cliffs past the end.
+        let duration = interval
+            .checked_mul(num_installments as u64)
+            .ok_or(ContractError::InvalidVestingSchedule)?;
+        if duration == 0 {
+            return Err(ContractError::VestingZeroDuration);
+        }
+        let end_time = start_time
+            .checked_add(duration)
+            .ok_or(ContractError::InvalidVestingSchedule)?;
+        let cliff_end = start_time
+            .checked_add(cliff_period)
+            .ok_or(ContractError::VestingCliffAfterEnd)?;
+        if cliff_end > end_time {
+            return Err(ContractError::VestingCliffAfterEnd);
         }
         if vault.balance == 0 {
             return Err(ContractError::EmptyVault);
@@ -11400,7 +11427,12 @@ impl TtlVaultContract {
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
         env.events()
-            .publish((REMOVE_PASSKEY_TOPIC, vault_id), passkey_hash);
+            .publish((REMOVE_PASSKEY_TOPIC, vault_id), passkey_hash.clone());
+        // Issue #1525: passkey_revoked event with credential ID hash and timestamp
+        env.events().publish(
+            (PASSKEY_REVOKED_TOPIC, vault_id),
+            (passkey_hash, env.ledger().timestamp()),
+        );
         Ok(())
     }
 
@@ -16013,13 +16045,43 @@ impl TtlVaultContract {
     // --- Issue #567: Withdrawal Destination Whitelist ---
 
     /// Adds an address to the withdrawal whitelist for a vault.
-    /// Only the vault owner can call this.
+    /// Only the vault owner can call this. The entry never expires.
     pub fn add_whitelist_address(
         env: Env,
         vault_id: u64,
         caller: Address,
         address: Address,
         label: String,
+    ) -> Result<(), ContractError> {
+        Self::add_whitelist_entry(env, vault_id, caller, address, label, 0)
+    }
+
+    /// Adds an address to the withdrawal whitelist for a vault that expires
+    /// once the ledger sequence passes `expires_at_ledger` - Issue #1528.
+    ///
+    /// # Errors
+    /// * `ContractError::InvalidWhitelistExpiry` - If `expires_at_ledger` is not in the future
+    pub fn add_whitelist_address_with_expiry(
+        env: Env,
+        vault_id: u64,
+        caller: Address,
+        address: Address,
+        label: String,
+        expires_at_ledger: u32,
+    ) -> Result<(), ContractError> {
+        if expires_at_ledger <= env.ledger().sequence() {
+            return Err(ContractError::InvalidWhitelistExpiry);
+        }
+        Self::add_whitelist_entry(env, vault_id, caller, address, label, expires_at_ledger)
+    }
+
+    fn add_whitelist_entry(
+        env: Env,
+        vault_id: u64,
+        caller: Address,
+        address: Address,
+        label: String,
+        expires_at_ledger: u32,
     ) -> Result<(), ContractError> {
         if Self::load_paused(&env) {
             return Err(ContractError::Paused);
@@ -16037,10 +16099,20 @@ impl TtlVaultContract {
             .get::<StorageKey, Vec<WhitelistEntry>>(&key)
             .unwrap_or_else(|| Vec::new(&env));
 
+        // Re-adding an address replaces its previous entry (and expiry).
+        let mut new_whitelist = Vec::new(&env);
+        for existing in whitelist.iter() {
+            if existing.address != address {
+                new_whitelist.push_back(existing);
+            }
+        }
+        let mut whitelist = new_whitelist;
+
         let entry = WhitelistEntry {
             address: address.clone(),
             added_at: env.ledger().timestamp(),
             label,
+            expires_at_ledger,
         };
         whitelist.push_back(entry);
 
@@ -16053,8 +16125,15 @@ impl TtlVaultContract {
             .instance()
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_LEDGERS);
 
-        env.events()
-            .publish((WHITELIST_ADDED_TOPIC, vault_id), address);
+        if expires_at_ledger == 0 {
+            env.events()
+                .publish((WHITELIST_ADDED_TOPIC, vault_id), address);
+        } else {
+            env.events().publish(
+                (WHITELIST_ADDED_EXPIRY_TOPIC, vault_id),
+                (address, expires_at_ledger),
+            );
+        }
         Ok(())
     }
 
@@ -16109,7 +16188,11 @@ impl TtlVaultContract {
     }
 
     /// Checks if an address is whitelisted for withdrawals.
-    fn is_whitelisted(env: &Env, vault_id: u64, address: &Address) -> bool {
+    ///
+    /// Returns `WhitelistEntryExpired` when the address is listed but its
+    /// entry's expiry ledger has passed (Issue #1528), and
+    /// `WithdrawalDestinationNotWhitelisted` when it is not listed at all.
+    fn check_whitelisted(env: &Env, vault_id: u64, address: &Address) -> Result<(), ContractError> {
         if let Some(whitelist) = env
             .storage()
             .persistent()
@@ -16117,12 +16200,17 @@ impl TtlVaultContract {
         {
             for entry in whitelist.iter() {
                 if entry.address == *address {
-                    return true;
+                    if entry.expires_at_ledger != 0
+                        && env.ledger().sequence() > entry.expires_at_ledger
+                    {
+                        return Err(ContractError::WhitelistEntryExpired);
+                    }
+                    return Ok(());
                 }
             }
-            false
+            Err(ContractError::WithdrawalDestinationNotWhitelisted)
         } else {
-            true // No whitelist means all addresses allowed
+            Ok(()) // No whitelist means all addresses allowed
         }
     }
 

@@ -8,6 +8,11 @@ use soroban_sdk::{
 pub const MAX_PROOF_SIZE: u32 = 4096;
 pub const MAX_CLAIM_SIZE: u32 = 1024;
 
+/// Expected byte length of a well-formed proof.
+pub const EXPECTED_PROOF_SIZE: u32 = 256;
+/// Expected byte length of a well-formed public input (claim).
+pub const EXPECTED_CLAIM_SIZE: u32 = 32;
+
 const VERIFY_CLAIM_TOPIC: soroban_sdk::Symbol = symbol_short!("vfy_claim");
 
 #[contracterror]
@@ -28,6 +33,10 @@ pub enum VerifierError {
     NotAdmin = 6,
     /// The given oracle address is not registered.
     OracleNotFound = 7,
+    /// Proof byte length does not match EXPECTED_PROOF_SIZE.
+    InvalidProofLength = 8,
+    /// Public input (claim) byte length does not match EXPECTED_CLAIM_SIZE.
+    InvalidInputLength = 9,
 }
 
 #[contracttype]
@@ -126,11 +135,17 @@ impl ZkVerifierContract {
         if proof.len() > MAX_PROOF_SIZE {
             panic_with_error!(&env, VerifierError::ProofTooLarge);
         }
+        if proof.len() != EXPECTED_PROOF_SIZE {
+            panic_with_error!(&env, VerifierError::InvalidProofLength);
+        }
         if claim.is_empty() {
             panic_with_error!(&env, VerifierError::EmptyClaim);
         }
         if claim.len() > MAX_CLAIM_SIZE {
             panic_with_error!(&env, VerifierError::ClaimTooLarge);
+        }
+        if claim.len() != EXPECTED_CLAIM_SIZE {
+            panic_with_error!(&env, VerifierError::InvalidInputLength);
         }
 
         // STUB: a single 0x00 byte is treated as a known-invalid proof sentinel.
