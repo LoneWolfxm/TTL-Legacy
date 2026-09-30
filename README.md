@@ -304,14 +304,8 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
 
-<!-- handsoff-issue-1510 -->
-- #1510: Fix: loan repayment late-penalty lacks upper bound
+<!-- handsoff-issue-1514 -->
+- #1514: Enhancement: add view function returning vault health summary
 
-<!-- handsoff-issue-1511 -->
-- #1511: Testing: add tests for token lending and repayment flow
-
-<!-- handsoff-issue-1512 -->
-- #1512: Testing: add tests for repay_ttl_borrow
-
-<!-- handsoff-issue-1513 -->
-- #1513: Enhancement: add contract-level reentrancy guard helper
+<!-- handsoff-issue-1515 -->
+- #1515: Fix: ensure all persistent entries extend TTL on read paths

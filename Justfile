@@ -43,6 +43,11 @@ fmt:
 audit:
     cargo audit --deny warnings
 
+# Audit all `pub fn` definitions for require_auth / admin-check coverage (issue #1507)
+auth-audit:
+    @echo "Auditing admin-only functions for require_auth coverage..."
+    bash scripts/audit_auth.sh
+
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 # Deploy to Stellar testnet (prompts if a contract already exists)

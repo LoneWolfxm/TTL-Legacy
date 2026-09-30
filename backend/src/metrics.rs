@@ -13,6 +13,14 @@ pub struct Metrics {
     pub contract_paused: AtomicU64,
     pub notification_deliveries_total: AtomicU64,
     pub notification_delivery_failures_total: AtomicU64,
+    pub notification_push_success_total: AtomicU64,
+    pub notification_push_failure_total: AtomicU64,
+    pub notification_email_success_total: AtomicU64,
+    pub notification_email_failure_total: AtomicU64,
+    pub notification_sms_success_total: AtomicU64,
+    pub notification_sms_failure_total: AtomicU64,
+    pub notification_delivery_latency_ms_sum: AtomicU64,
+    pub notification_delivery_latency_ms_count: AtomicU64,
 }
 
 impl Metrics {
@@ -36,6 +44,18 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record notification delivery latency (in milliseconds) for the given channel.
+    pub fn record_notification_latency(&self, channel: &str, latency_ms: u64) {
+        self.notification_delivery_latency_ms_sum
+            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.notification_delivery_latency_ms_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.notification_channel_latency_sum(channel)
+            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.notification_channel_latency_count(channel)
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Per-channel success counter, keyed by channel name (push/email/sms).
     pub fn notification_channel_success(&self, channel: &str) -> &AtomicU64 {
         match channel {
@@ -51,6 +71,24 @@ impl Metrics {
             "email" => &self.notification_email_failure_total,
             "sms" => &self.notification_sms_failure_total,
             _ => &self.notification_push_failure_total,
+        }
+    }
+
+    /// Per-channel latency sum (milliseconds), keyed by channel name.
+    pub fn notification_channel_latency_sum(&self, channel: &str) -> &AtomicU64 {
+        match channel {
+            "email" => &self.notification_email_latency_ms_sum,
+            "sms" => &self.notification_sms_latency_ms_sum,
+            _ => &self.notification_push_latency_ms_sum,
+        }
+    }
+
+    /// Per-channel latency observation count, keyed by channel name.
+    pub fn notification_channel_latency_count(&self, channel: &str) -> &AtomicU64 {
+        match channel {
+            "email" => &self.notification_email_latency_ms_count,
+            "sms" => &self.notification_sms_latency_ms_count,
+            _ => &self.notification_push_latency_ms_count,
         }
     }
 
@@ -148,6 +186,34 @@ impl Metrics {
             "Total failed SMS notification deliveries",
             self.notification_sms_failure_total.load(Ordering::Relaxed),
         );
+        push_histogram(
+            &mut out,
+            "ttl_legacy_notification_delivery_latency_ms",
+            "Notification delivery latency in milliseconds across all channels",
+            self.notification_delivery_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_delivery_latency_ms_count.load(Ordering::Relaxed),
+        );
+        push_histogram(
+            &mut out,
+            "ttl_legacy_notification_push_delivery_latency_ms",
+            "Push notification delivery latency in milliseconds",
+            self.notification_push_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_push_latency_ms_count.load(Ordering::Relaxed),
+        );
+        push_histogram(
+            &mut out,
+            "ttl_legacy_notification_email_delivery_latency_ms",
+            "Email notification delivery latency in milliseconds",
+            self.notification_email_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_email_latency_ms_count.load(Ordering::Relaxed),
+        );
+        push_histogram(
+            &mut out,
+            "ttl_legacy_notification_sms_delivery_latency_ms",
+            "SMS notification delivery latency in milliseconds",
+            self.notification_sms_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_sms_latency_ms_count.load(Ordering::Relaxed),
+        );
 
         out
     }
@@ -169,6 +235,13 @@ fn push_gauge_i64(out: &mut String, name: &str, help: &str, value: i64) {
     out.push_str(&format!("# HELP {name} {help}\n"));
     out.push_str(&format!("# TYPE {name} gauge\n"));
     out.push_str(&format!("{name} {value}\n"));
+}
+
+fn push_histogram(out: &mut String, name: &str, help: &str, sum: u64, count: u64) {
+    out.push_str(&format!("# HELP {name} {help}\n"));
+    out.push_str(&format!("# TYPE {name} histogram\n"));
+    out.push_str(&format!("{name}_sum {sum}\n"));
+    out.push_str(&format!("{name}_count {count}\n"));
 }
 
 #[cfg(test)]
@@ -219,17 +292,35 @@ mod tests {
         let m = Metrics::new();
 
         m.record_notification_success("push");
-        m.record_notification_success("email");
-        m.record_notification_success("sms");
         m.record_notification_failure("push");
-        m.record_notification_failure("email");
+        m.record_notification_success("email");
         m.record_notification_failure("sms");
 
-        assert_eq!(m.notification_push_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_email_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_sms_success_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_push_failure_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_email_failure_total.load(Ordering::Relaxed), 1);
-        assert_eq!(m.notification_sms_failure_total.load(Ordering::Relaxed), 1);
+        let output = m.render();
+        assert!(output.contains("ttl_legacy_notification_push_success_total 1"));
+        assert!(output.contains("ttl_legacy_notification_push_failure_total 1"));
+        assert!(output.contains("ttl_legacy_notification_email_success_total 1"));
+        assert!(output.contains("ttl_legacy_notification_email_failure_total 0"));
+        assert!(output.contains("ttl_legacy_notification_sms_success_total 0"));
+        assert!(output.contains("ttl_legacy_notification_sms_failure_total 1"));
+    }
+
+    #[test]
+    fn test_notification_delivery_latency_histogram() {
+        let m = Metrics::new();
+
+        m.record_notification_latency("push", 120);
+        m.record_notification_latency("push", 80);
+        m.record_notification_latency("email", 250);
+
+        let output = m.render();
+        assert!(output.contains("# TYPE ttl_legacy_notification_delivery_latency_ms histogram"));
+        assert!(output.contains("ttl_legacy_notification_delivery_latency_ms_sum 450"));
+        assert!(output.contains("ttl_legacy_notification_delivery_latency_ms_count 3"));
+        assert!(output.contains("ttl_legacy_notification_push_delivery_latency_ms_sum 200"));
+        assert!(output.contains("ttl_legacy_notification_push_delivery_latency_ms_count 2"));
+        assert!(output.contains("ttl_legacy_notification_email_delivery_latency_ms_sum 250"));
+        assert!(output.contains("ttl_legacy_notification_email_delivery_latency_ms_count 1"));
+        assert!(output.contains("ttl_legacy_notification_sms_delivery_latency_ms_count 0"));
     }
 }

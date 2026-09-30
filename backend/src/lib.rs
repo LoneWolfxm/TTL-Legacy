@@ -12,6 +12,8 @@ pub mod metrics;
 pub mod models;
 pub mod notifications;
 pub mod otel;
+/// Issue #1482: shared notification provider abstraction
+pub mod providers;
 pub mod rate_limit;
 pub mod routes;
 /// Issue #1199: request input sanitization middleware
@@ -32,6 +34,7 @@ pub use fee_sponsorship::*;
 pub use handlers::*;
 pub use models::*;
 pub use notifications::*;
+pub use providers::*;
 pub use sms::*;
 pub use templates::*;
 pub use websocket::*;
