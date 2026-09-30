@@ -304,14 +304,8 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
 
-<!-- handsoff-issue-1502 -->
-- #1502: Refactor: move inline tests out of test.rs into feature test files
+<!-- handsoff-issue-1514 -->
+- #1514: Enhancement: add view function returning vault health summary
 
-<!-- handsoff-issue-1503 -->
-- #1503: Refactor: rename bug_fix_tests_1264_1265_1266_1267.rs to descriptive name
-
-<!-- handsoff-issue-1504 -->
-- #1504: Enhancement: add contract function to query all vaults by beneficiary
-
-<!-- handsoff-issue-1505 -->
-- #1505: Fix: beneficiary index not cleaned up on vault release
+<!-- handsoff-issue-1515 -->
+- #1515: Fix: ensure all persistent entries extend TTL on read paths
