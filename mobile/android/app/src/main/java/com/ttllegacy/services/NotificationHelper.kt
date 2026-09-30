@@ -37,17 +37,28 @@ class NotificationHelper @Inject constructor(@ApplicationContext private val con
         val pi = PendingIntent.getActivity(context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
+
+        if (vaultId != null) {
+            val checkInIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                data = android.net.Uri.parse("ttllegacy://vault/$vaultId/check-in")
+            }
+            val checkInPi = PendingIntent.getActivity(
+                context, vaultId.hashCode() + 1, checkInIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(android.R.drawable.ic_menu_rotate, "Check In Now", checkInPi)
+        }
 
         val nm = context.getSystemService(NotificationManager::class.java)
-        nm.notify(vaultId.hashCode(), notification)
+        nm.notify(vaultId.hashCode(), builder.build())
     }
 
     fun showQueuedCheckIn(count: Int) {

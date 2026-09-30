@@ -298,3 +298,233 @@ fn test_only_owner_can_set_release_condition() {
         .unwrap();
     assert_eq!(err, soroban_sdk::Error::from_contract_error(6)); // NotOwner
 }
+
+// ---------------------------------------------------------------------------
+// Test: missing oracle
+// A vault whose release condition points to an address that has no deployed
+// contract (i.e. the oracle is "missing") must:
+//   1. Not panic — the graceful-fallback in oracle::query() returns Ok(false).
+//   2. Keep the vault Locked with funds intact.
+//   3. Emit ConditionsNotApproved (error 33) to the caller.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_missing_oracle_returns_conditions_not_approved_and_vault_stays_locked() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    // A freshly-generated address has no contract deployed behind it — it is
+    // the canonical "missing oracle" scenario.
+    let missing_oracle = Address::generate(&env);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &25_000);
+    client.set_release_condition(
+        &vault_id,
+        &owner,
+        &ReleaseCondition::Oracle(missing_oracle.clone()),
+    );
+
+    // Attempting to release while the oracle address resolves to nothing must
+    // surface ConditionsNotApproved (error 33), not an unhandled panic.
+    let err = client
+        .try_trigger_release(&vault_id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err,
+        soroban_sdk::Error::from_contract_error(33),
+        "expected ConditionsNotApproved when oracle contract is missing"
+    );
+
+    // Vault must remain Locked with full balance untouched.
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(
+        vault.status,
+        ReleaseStatus::Locked,
+        "vault must stay Locked after missing-oracle call"
+    );
+    assert_eq!(
+        vault.balance, 25_000,
+        "vault balance must be unchanged after missing-oracle call"
+    );
+
+    // Confirm it is also still not expired — this is a pure oracle failure,
+    // not a TTL issue.
+    assert!(
+        !client.is_expired(&vault_id),
+        "vault must not appear expired after missing-oracle call"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: stale oracle
+// A stale oracle is one that has been deployed and responds, but has not been
+// updated — it keeps returning `false` even as ledger time advances well past
+// the vault's check-in interval.  The system must:
+//   1. Never release funds based on the passage of time alone when the
+//      release condition is Oracle-only (not TTLExpiry).
+//   2. Continue returning ConditionsNotApproved on every attempt.
+//   3. Release correctly the moment the oracle is finally updated to `true`.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_stale_oracle_blocks_release_regardless_of_time_passing() {
+    let (env, owner, beneficiary, _, token_address, client) = setup();
+
+    let oracle_address = env.register_contract(None, MockOracle);
+    let oracle_client = MockOracleClient::new(&env, &oracle_address);
+
+    // Oracle starts stale — deployed but perpetually returning false.
+    oracle_client.set_release(&false);
+
+    // Short check-in interval so advancing time is cheap in the test.
+    let interval = 100u64;
+    let vault_id = client.create_vault(&owner, &beneficiary, &interval, &None);
+    client.deposit(&vault_id, &owner, &40_000);
+
+    // Pure oracle condition — NOT combined with TTLExpiry, so time alone
+    // must never trigger a release.
+    client.set_release_condition(
+        &vault_id,
+        &owner,
+        &ReleaseCondition::Oracle(oracle_address.clone()),
+    );
+
+    // Advance ledger well past the TTL — stale oracle should still block.
+    env.ledger().with_mut(|li| {
+        li.timestamp += interval * 10; // 10× the check-in interval
+    });
+
+    // Even though the vault would be "expired" by TTL, an Oracle-only
+    // condition must not be satisfied by time.
+    let err = client
+        .try_trigger_release(&vault_id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err,
+        soroban_sdk::Error::from_contract_error(33),
+        "stale oracle must block release even after TTL would have expired"
+    );
+
+    // Sanity: vault is still locked and fully funded.
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.status, ReleaseStatus::Locked);
+    assert_eq!(vault.balance, 40_000);
+
+    // --- Now the oracle is finally updated (the real-world event occurred) ---
+    oracle_client.set_release(&true);
+
+    client.trigger_release(&vault_id);
+
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(
+        vault.status,
+        ReleaseStatus::Released,
+        "vault must release once the stale oracle is updated to true"
+    );
+    assert_eq!(vault.balance, 0);
+
+    let token_client = token::Client::new(&env, &token_address);
+    assert_eq!(
+        token_client.balance(&beneficiary),
+        40_000,
+        "beneficiary must receive full balance after oracle update"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test: unauthorized oracle update
+// Only the vault owner may call set_release_condition or
+// set_release_conditions.  Any other caller — including a beneficiary or a
+// random third party — must be rejected with NotOwner (error 6).
+// This ensures a malicious actor cannot silently swap the oracle address to
+// one they control and force an unauthorized release.
+// ---------------------------------------------------------------------------
+#[test]
+fn test_unauthorized_oracle_update_is_rejected() {
+    let (env, owner, beneficiary, _, _, client) = setup();
+
+    let attacker = Address::generate(&env);
+
+    // Attacker deploys their own oracle that always returns true.
+    let malicious_oracle = env.register_contract(None, MockOracle);
+    let malicious_oracle_client = MockOracleClient::new(&env, &malicious_oracle);
+    malicious_oracle_client.set_release(&true);
+
+    // Legitimate oracle that returns false (vault should NOT be releasable).
+    let legitimate_oracle = env.register_contract(None, MockOracle);
+    let legitimate_oracle_client = MockOracleClient::new(&env, &legitimate_oracle);
+    legitimate_oracle_client.set_release(&false);
+
+    let vault_id = client.create_vault(&owner, &beneficiary, &3600u64, &None);
+    client.deposit(&vault_id, &owner, &75_000);
+
+    // Owner correctly sets the legitimate oracle.
+    client.set_release_condition(
+        &vault_id,
+        &owner,
+        &ReleaseCondition::Oracle(legitimate_oracle.clone()),
+    );
+
+    // Attacker tries to overwrite the oracle condition with their own address
+    // via set_release_condition — must be rejected with NotOwner (6).
+    let err_single = client
+        .try_set_release_condition(
+            &vault_id,
+            &attacker,
+            &ReleaseCondition::Oracle(malicious_oracle.clone()),
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err_single,
+        soroban_sdk::Error::from_contract_error(6),
+        "set_release_condition must reject non-owner caller with NotOwner"
+    );
+
+    // Attacker also tries the multi-condition path.
+    let malicious_conditions = vec![
+        &env,
+        ReleaseCondition::Oracle(malicious_oracle.clone()),
+    ];
+    let err_multi = client
+        .try_set_release_conditions(&vault_id, &attacker, &malicious_conditions)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err_multi,
+        soroban_sdk::Error::from_contract_error(6),
+        "set_release_conditions must reject non-owner caller with NotOwner"
+    );
+
+    // Beneficiary is also not the owner — same rejection expected.
+    let err_beneficiary = client
+        .try_set_release_condition(
+            &vault_id,
+            &beneficiary,
+            &ReleaseCondition::Oracle(malicious_oracle.clone()),
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err_beneficiary,
+        soroban_sdk::Error::from_contract_error(6),
+        "beneficiary must not be able to overwrite oracle condition"
+    );
+
+    // Verify the vault condition was never changed — the legitimate (false)
+    // oracle is still in effect, so trigger_release must still be blocked.
+    let err_release = client
+        .try_trigger_release(&vault_id)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err_release,
+        soroban_sdk::Error::from_contract_error(33),
+        "vault must still be blocked by the original legitimate oracle"
+    );
+
+    // And vault remains fully intact.
+    let vault = client.get_vault(&vault_id);
+    assert_eq!(vault.status, ReleaseStatus::Locked);
+    assert_eq!(vault.balance, 75_000);
+}

@@ -13,9 +13,14 @@ pub struct Metrics {
     pub contract_paused: AtomicU64,
     pub notification_deliveries_total: AtomicU64,
     pub notification_delivery_failures_total: AtomicU64,
-    pub cache_hits_total: AtomicU64,
-    pub cache_misses_total: AtomicU64,
-    pub cache_invalidations_total: AtomicU64,
+    pub notification_push_success_total: AtomicU64,
+    pub notification_push_failure_total: AtomicU64,
+    pub notification_email_success_total: AtomicU64,
+    pub notification_email_failure_total: AtomicU64,
+    pub notification_sms_success_total: AtomicU64,
+    pub notification_sms_failure_total: AtomicU64,
+    pub notification_delivery_latency_ms_sum: AtomicU64,
+    pub notification_delivery_latency_ms_count: AtomicU64,
 }
 
 impl Metrics {
@@ -39,19 +44,15 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a cache hit.
-    pub fn record_cache_hit(&self) {
-        self.cache_hits_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Record a cache miss.
-    pub fn record_cache_miss(&self) {
-        self.cache_misses_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Record a cache entry invalidated by an indexed contract event.
-    pub fn record_cache_invalidation(&self) {
-        self.cache_invalidations_total
+    /// Record notification delivery latency (in milliseconds) for the given channel.
+    pub fn record_notification_latency(&self, channel: &str, latency_ms: u64) {
+        self.notification_delivery_latency_ms_sum
+            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.notification_delivery_latency_ms_count
+            .fetch_add(1, Ordering::Relaxed);
+        self.notification_channel_latency_sum(channel)
+            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.notification_channel_latency_count(channel)
             .fetch_add(1, Ordering::Relaxed);
     }
 
@@ -70,6 +71,24 @@ impl Metrics {
             "email" => &self.notification_email_failure_total,
             "sms" => &self.notification_sms_failure_total,
             _ => &self.notification_push_failure_total,
+        }
+    }
+
+    /// Per-channel latency sum (milliseconds), keyed by channel name.
+    pub fn notification_channel_latency_sum(&self, channel: &str) -> &AtomicU64 {
+        match channel {
+            "email" => &self.notification_email_latency_ms_sum,
+            "sms" => &self.notification_sms_latency_ms_sum,
+            _ => &self.notification_push_latency_ms_sum,
+        }
+    }
+
+    /// Per-channel latency observation count, keyed by channel name.
+    pub fn notification_channel_latency_count(&self, channel: &str) -> &AtomicU64 {
+        match channel {
+            "email" => &self.notification_email_latency_ms_count,
+            "sms" => &self.notification_sms_latency_ms_count,
+            _ => &self.notification_push_latency_ms_count,
         }
     }
 
@@ -167,23 +186,33 @@ impl Metrics {
             "Total failed SMS notification deliveries",
             self.notification_sms_failure_total.load(Ordering::Relaxed),
         );
-        push_counter(
+        push_histogram(
             &mut out,
-            "ttl_legacy_cache_hits_total",
-            "Total cache hits",
-            self.cache_hits_total.load(Ordering::Relaxed),
+            "ttl_legacy_notification_delivery_latency_ms",
+            "Notification delivery latency in milliseconds across all channels",
+            self.notification_delivery_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_delivery_latency_ms_count.load(Ordering::Relaxed),
         );
-        push_counter(
+        push_histogram(
             &mut out,
-            "ttl_legacy_cache_misses_total",
-            "Total cache misses",
-            self.cache_misses_total.load(Ordering::Relaxed),
+            "ttl_legacy_notification_push_delivery_latency_ms",
+            "Push notification delivery latency in milliseconds",
+            self.notification_push_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_push_latency_ms_count.load(Ordering::Relaxed),
         );
-        push_counter(
+        push_histogram(
             &mut out,
-            "ttl_legacy_cache_invalidations_total",
-            "Total cache entries invalidated by indexed contract events",
-            self.cache_invalidations_total.load(Ordering::Relaxed),
+            "ttl_legacy_notification_email_delivery_latency_ms",
+            "Email notification delivery latency in milliseconds",
+            self.notification_email_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_email_latency_ms_count.load(Ordering::Relaxed),
+        );
+        push_histogram(
+            &mut out,
+            "ttl_legacy_notification_sms_delivery_latency_ms",
+            "SMS notification delivery latency in milliseconds",
+            self.notification_sms_latency_ms_sum.load(Ordering::Relaxed),
+            self.notification_sms_latency_ms_count.load(Ordering::Relaxed),
         );
 
         out
@@ -206,6 +235,13 @@ fn push_gauge_i64(out: &mut String, name: &str, help: &str, value: i64) {
     out.push_str(&format!("# HELP {name} {help}\n"));
     out.push_str(&format!("# TYPE {name} gauge\n"));
     out.push_str(&format!("{name} {value}\n"));
+}
+
+fn push_histogram(out: &mut String, name: &str, help: &str, sum: u64, count: u64) {
+    out.push_str(&format!("# HELP {name} {help}\n"));
+    out.push_str(&format!("# TYPE {name} histogram\n"));
+    out.push_str(&format!("{name}_sum {sum}\n"));
+    out.push_str(&format!("{name}_count {count}\n"));
 }
 
 #[cfg(test)]
@@ -257,37 +293,34 @@ mod tests {
 
         m.record_notification_success("push");
         m.record_notification_failure("push");
+        m.record_notification_success("email");
+        m.record_notification_failure("sms");
 
         let output = m.render();
         assert!(output.contains("ttl_legacy_notification_push_success_total 1"));
         assert!(output.contains("ttl_legacy_notification_push_failure_total 1"));
-        assert!(output.contains("ttl_legacy_notification_email_success_total 0"));
+        assert!(output.contains("ttl_legacy_notification_email_success_total 1"));
         assert!(output.contains("ttl_legacy_notification_email_failure_total 0"));
         assert!(output.contains("ttl_legacy_notification_sms_success_total 0"));
-        assert!(output.contains("ttl_legacy_notification_sms_failure_total 0"));
+        assert!(output.contains("ttl_legacy_notification_sms_failure_total 1"));
     }
 
     #[test]
-    fn test_cache_hit_miss_metrics() {
+    fn test_notification_delivery_latency_histogram() {
         let m = Metrics::new();
 
-        m.record_cache_hit();
-        m.record_cache_hit();
-        m.record_cache_miss();
+        m.record_notification_latency("push", 120);
+        m.record_notification_latency("push", 80);
+        m.record_notification_latency("email", 250);
 
         let output = m.render();
-        assert!(output.contains("ttl_legacy_cache_hits_total 2"));
-        assert!(output.contains("ttl_legacy_cache_misses_total 1"));
-    }
-
-    #[test]
-    fn test_cache_invalidation_after_checkin() {
-        let m = Metrics::new();
-
-        // A check-in event is indexed and invalidates the vault's cache entry.
-        m.record_cache_invalidation();
-
-        let output = m.render();
-        assert!(output.contains("ttl_legacy_cache_invalidations_total 1"));
+        assert!(output.contains("# TYPE ttl_legacy_notification_delivery_latency_ms histogram"));
+        assert!(output.contains("ttl_legacy_notification_delivery_latency_ms_sum 450"));
+        assert!(output.contains("ttl_legacy_notification_delivery_latency_ms_count 3"));
+        assert!(output.contains("ttl_legacy_notification_push_delivery_latency_ms_sum 200"));
+        assert!(output.contains("ttl_legacy_notification_push_delivery_latency_ms_count 2"));
+        assert!(output.contains("ttl_legacy_notification_email_delivery_latency_ms_sum 250"));
+        assert!(output.contains("ttl_legacy_notification_email_delivery_latency_ms_count 1"));
+        assert!(output.contains("ttl_legacy_notification_sms_delivery_latency_ms_count 0"));
     }
 }
