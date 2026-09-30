@@ -81,6 +81,9 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Audit admin-only functions for require_auth coverage
+        run: bash scripts/audit_admin_auth.sh
+
       - name: Install cargo-audit
         run: cargo install cargo-audit
 
