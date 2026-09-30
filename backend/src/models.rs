@@ -367,15 +367,17 @@ pub struct SearchQuery {
     pub status: Option<VaultStatus>,
     pub created_after: Option<DateTime<Utc>>,
     pub created_before: Option<DateTime<Utc>>,
-    pub page: Option<u32>,
+    /// Maximum number of results to return (1–100, default 20).
     pub limit: Option<u32>,
+    /// Opaque cursor returned by a previous response; omit for the first page.
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchResult {
     pub vaults: Vec<Vault>,
-    pub total: u32,
-    pub page: u32,
+    /// Cursor to pass as `cursor` in the next request; absent when there are no more results.
+    pub next_cursor: Option<String>,
     pub limit: u32,
 }
 
