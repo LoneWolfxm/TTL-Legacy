@@ -43,6 +43,8 @@ pub const SET_METADATA_TOPIC: Symbol = symbol_short!("set_meta");
 pub const INHERITANCE_TOPIC: Symbol = symbol_short!("inherit");
 pub const ADD_PASSKEY_TOPIC: Symbol = symbol_short!("add_pk");
 pub const REMOVE_PASSKEY_TOPIC: Symbol = symbol_short!("rm_pk");
+// Issue #1525: emitted when a passkey is revoked, for off-chain monitoring
+pub const PASSKEY_REVOKED_TOPIC: Symbol = symbol_short!("pk_revoke");
 pub const ROTATE_PASSKEY_TOPIC: Symbol = symbol_short!("rot_pk");
 pub const BACKUP_CODE_USED_TOPIC: Symbol = symbol_short!("bk_used");
 pub const BACKUP_CODES_GENERATED_TOPIC: Symbol = symbol_short!("bk_gen");
@@ -153,6 +155,8 @@ pub const WITHDRAWAL_LIMIT_EXCEEDED_TOPIC: Symbol = symbol_short!("wd_exc");
 pub const WHITELIST_ADDED_TOPIC: Symbol = symbol_short!("wl_add");
 pub const WHITELIST_REMOVED_TOPIC: Symbol = symbol_short!("wl_rem");
 pub const WHITELIST_VIOLATION_TOPIC: Symbol = symbol_short!("wl_vio");
+// Issue #1528: whitelist entry added with an expiry ledger
+pub const WHITELIST_ADDED_EXPIRY_TOPIC: Symbol = symbol_short!("wl_add_ex");
 pub const TOKEN_WHITELIST_VALIDATED_TOPIC: Symbol = symbol_short!("tok_wl");
 pub const TOKEN_CONVERSION_TOPIC: Symbol = symbol_short!("tok_conv");
 pub const TOKEN_STAKING_TOPIC: Symbol = symbol_short!("tok_stk");
@@ -1564,6 +1568,9 @@ pub struct WhitelistEntry {
     pub address: Address,
     pub added_at: u64,
     pub label: String,
+    /// Ledger sequence after which this entry is no longer valid - Issue #1528.
+    /// `0` means the entry never expires.
+    pub expires_at_ledger: u32,
 }
 
 /// Withdrawal reversal entry - Issue #568
