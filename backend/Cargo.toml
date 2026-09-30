@@ -60,3 +60,9 @@ sha2 = "0.10"
 [dev-dependencies]
 tokio-test = "0.4"
 mockito = "1.4"
+
+# Soroban sandbox for fee sponsorship integration tests (Issue #1499)
+soroban-sdk = { version = "21", features = ["testutils"] }
+
+# Property-based tests for input sanitization (Issue #1500)
+proptest = "1"
