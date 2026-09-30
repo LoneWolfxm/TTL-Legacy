@@ -1,0 +1,27 @@
+{
+  "checkIn": {
+    "button": "Check In",
+    "pending": "Pending…",
+    "success": "Check-in successful",
+    "failed": "Check-in failed",
+    "error": "Error submitting check-in",
+    "connectWallet": "Connect wallet to check in"
+  },
+  "vault": {
+    "statusHealthy": "Vault healthy",
+    "statusDegraded": "Vault degraded",
+    "statusDown": "Vault down",
+    "statusUnknown": "Vault status unknown",
+    "create": "Create Vault",
+    "beneficiaryLabel": "Beneficiary address",
+    "checkInIntervalLabel": "Check-in interval (seconds)",
+    "idLabel": "Vault ID"
+  },
+  "common": {
+    "loading": "Loading…",
+    "error": "An error occurred",
+    "retry": "Retry",
+    "confirm": "Confirm",
+    "cancel": "Cancel"
+  }
+}
