@@ -304,5 +304,8 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 <!-- handsoff-issue-1477 -->
 - #1477: Fix: beneficiary claim handler returns a mock transaction hash
 
-<!-- handsoff-issue-1485 -->
-- #1485: Refactor: remove unwrap() calls from notifications module
+<!-- handsoff-issue-1514 -->
+- #1514: Enhancement: add view function returning vault health summary
+
+<!-- handsoff-issue-1515 -->
+- #1515: Fix: ensure all persistent entries extend TTL on read paths
