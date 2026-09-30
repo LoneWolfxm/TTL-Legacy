@@ -43,6 +43,19 @@ fmt:
 audit:
     cargo audit --deny warnings
 
+# ── Docs ──────────────────────────────────────────────────────────────────────
+
+# Regenerate docs/contract-errors.md from the ContractError enum
+gen-error-docs:
+    @echo "Generating contract error code documentation..."
+    bash scripts/gen_contract_error_docs.sh
+    @echo "Wrote docs/contract-errors.md"
+
+# Fail if docs/contract-errors.md is out of date with the ContractError enum
+error-docs-check:
+    @echo "Checking contract error docs for drift..."
+    bash scripts/gen_contract_error_docs.sh --check
+
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 # Deploy to Stellar testnet (prompts if a contract already exists)

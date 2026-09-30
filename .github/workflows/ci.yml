@@ -100,6 +100,15 @@ jobs:
           python3 -m openapi_spec_validator docs/openapi.yaml
           echo "✅ OpenAPI spec validation passed"
 
+      - name: Check contract error docs are up to date
+        run: |
+          python3 scripts/generate_contract_error_docs.py
+          if ! git diff --exit-code docs/contract-errors.md; then
+            echo "docs/contract-errors.md is out of date. Run scripts/generate_contract_error_docs.py and commit the result."
+            exit 1
+          fi
+          echo "✅ Contract error docs are up to date"
+
       - name: Check version consistency
         run: |
           CHANGELOG_VERSION=$(grep -m 1 "^## \[" CHANGELOG.md | sed -E 's/## \[([0-9]+\.[0-9]+\.[0-9]+)\].*/\1/')
